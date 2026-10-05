@@ -1,10 +1,4 @@
-
-
-
-
-
-
-56import cv2
+import cv2
 import numpy as np
 import os
 
@@ -40,7 +34,7 @@ def clahe_opencv(img, clip_limit=2.0, tile_grid_size=(8, 8)):
     clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
     return clahe.apply(img)
 
-# KISIM 2: HAZIR FONKSİYON KULLANMADAN MANUEL CLAHE GERÇEKLEME
+# KISIM 2: HAZIR FONKSİYON KULLANMADAN MANUEL CLAHE GERÇEKLEME (VEKTÖREL HIZLANDIRILMIŞ)
 
 def clahe_manuel(img, clip_limit=2.0, grid_size=(8, 8)):
     h, w = img.shape
@@ -55,14 +49,16 @@ def clahe_manuel(img, clip_limit=2.0, grid_size=(8, 8)):
     for r in range(grid_h):
         for c in range(grid_w):
             # Kutucuk alanını kes
-            y_start, y_end = r * tile_h, (r + 1) * tile_h if r < grid_h - 1 else h
-            x_start, x_end = c * tile_w, (c + 1) * tile_w if c < grid_w - 1 else w
+            y_start = r * tile_h
+            y_end = (r + 1) * tile_h if r < grid_h - 1 else h
+            
+            x_start = c * tile_w
+            x_end = (c + 1) * tile_w if c < grid_w - 1 else w
+            
             tile = img[y_start:y_end, x_start:x_end]
             
             # A) Manuel Histogram Hesabı
-            hist = np.zeros(256, dtype=np.int32)
-            for pixel in tile.ravel():
-                hist[pixel] += 1
+            hist = np.bincount(tile.ravel(), minlength=256)
                 
             # B) Clip Limit Sınırlaması ve Yeniden Dağıtım
             actual_tile_size = tile.size
@@ -83,11 +79,7 @@ def clahe_manuel(img, clip_limit=2.0, grid_size=(8, 8)):
             hist[:leftover] += 1
             
             # C) Manuel CDF Hesabı
-            cdf = np.zeros(256, dtype=np.float32)
-            cumulative = 0
-            for i in range(256):
-                cumulative += hist[i]
-                cdf[i] = cumulative
+            cdf = np.cumsum(hist).astype(np.float32)
                 
             # D) LUT Dönüşümü (0-255 aralığına ölçekleme)
             cdf_min = cdf[cdf > 0].min() if np.any(cdf > 0) else 0
@@ -100,67 +92,56 @@ def clahe_manuel(img, clip_limit=2.0, grid_size=(8, 8)):
                 
             luts[r, c] = np.clip(lut, 0, 255).astype(np.uint8)
 
-    # 2. Bilineer İnterpolasyon ile Kutucukları Yumuşakça Birleştirme
-    out_img = np.zeros_like(img, dtype=np.uint8)
+    # 2. Bilineer İnterpolasyon ile Kutucukları Birleştirme (Matriselleştirilmiş)
+    y_coords, x_coords = np.indices((h, w))
     
-    for y in range(h):
-        for x in range(w):
-            # En yakın 4 kutucuk merkezini bul
-            gx = (x / tile_w) - 0.5
-            gy = (y / tile_h) - 0.5
-            
-            g_x1 = int(np.floor(gx))
-            g_y1 = int(np.floor(gy))
-            g_x2 = g_x1 + 1
-            g_y2 = g_y1 + 1
-            
-            # Sınır kontrolleri
-            g_x1_c = np.clip(g_x1, 0, grid_w - 1)
-            g_x2_c = np.clip(g_x2, 0, grid_w - 1)
-            g_y1_c = np.clip(g_y1, 0, grid_h - 1)
-            g_y2_c = np.clip(g_y2, 0, grid_h - 1)
-            
-            fx = gx - g_x1
-            fy = gy - g_y1
-            
-            val = img[y, x]
-            
-            # 4 komşu kutucuktan gelen değerler
-            v11 = luts[g_y1_c, g_x1_c, val]
-            v12 = luts[g_y1_c, g_x2_c, val]
-            v21 = luts[g_y2_c, g_x1_c, val]
-            v22 = luts[g_y2_c, g_x2_c, val]
-            
-            # Bilineer ağırlıklandırma
-            if g_x1 < 0 or g_x2 >= grid_w:
-                fx = 0
-            if g_y1 < 0 or g_y2 >= grid_h:
-                fy = 0
-                
-            interpolated = (1 - fx) * (1 - fy) * v11 + \
-                           fx * (1 - fy) * v12 + \
-                           (1 - fx) * fy * v21 + \
-                           fx * fy * v22
-                           
-            out_img[y, x] = int(round(interpolated))
-            
+    gx = (x_coords / tile_w) - 0.5
+    gy = (y_coords / tile_h) - 0.5
+    
+    g_x1 = np.floor(gx).astype(np.int32)
+    g_y1 = np.floor(gy).astype(np.int32)
+    g_x2 = g_x1 + 1
+    g_y2 = g_y1 + 1
+    
+    g_x1_c = np.clip(g_x1, 0, grid_w - 1)
+    g_x2_c = np.clip(g_x2, 0, grid_w - 1)
+    g_y1_c = np.clip(g_y1, 0, grid_h - 1)
+    g_y2_c = np.clip(g_y2, 0, grid_h - 1)
+    
+    fx = np.where((g_x1 < 0) | (g_x2 >= grid_w), 0.0, gx - g_x1)
+    fy = np.where((g_y1 < 0) | (g_y2 >= grid_h), 0.0, gy - g_y1)
+    
+    vals = img
+    
+    v11 = luts[g_y1_c, g_x1_c, vals]
+    v12 = luts[g_y1_c, g_x2_c, vals]
+    v21 = luts[g_y2_c, g_x1_c, vals]
+    v22 = luts[g_y2_c, g_x2_c, vals]
+    
+    interpolated = (1 - fx) * (1 - fy) * v11 + \
+                   fx * (1 - fy) * v12 + \
+                   (1 - fx) * fy * v21 + \
+                   fx * fy * v22
+                   
+    out_img = np.round(interpolated).astype(np.uint8)
     return out_img
 
 
 # UYGULAMA
-img = resmi_oku_gri(input_path)
+if __name__ == "__main__":
+    img = resmi_oku_gri(input_path)
 
-if img is None:
-    print(f"❌ Resim bulunamadı: {input_path}")
-else:
-    print("✓ Resim yüklendi. CLAHE işlemleri çalıştırılıyor...")
+    if img is None:
+        print(f"❌ Resim bulunamadı: {input_path}")
+    else:
+        print("✓ Resim yüklendi. CLAHE işlemleri çalıştırılıyor...")
 
-    # 1. Hazır OpenCV CLAHE
-    res_opencv = clahe_opencv(img, clip_limit=2.0, tile_grid_size=(8, 8))
-    resmi_kaydet(output_opencv_path, res_opencv)
-    print("✅ OpenCV hazır CLAHE tamamlandı -> 'clahe_opencv.jpg'")
+        # 1. Hazır OpenCV CLAHE
+        res_opencv = clahe_opencv(img, clip_limit=2.0, tile_grid_size=(8, 8))
+        resmi_kaydet(output_opencv_path, res_opencv)
+        print("✅ OpenCV hazır CLAHE tamamlandı -> 'clahe_opencv.jpg'")
 
-    # 2. Manuel Kodlanmış CLAHE
-    res_manuel = clahe_manuel(img, clip_limit=2.0, grid_size=(8, 8))
-    resmi_kaydet(output_manual_path, res_manuel)
-    print("✅ Manuel yazılan CLAHE tamamlandı -> 'clahe_manuel.jpg'")
+        # 2. Manuel Kodlanmış CLAHE
+        res_manuel = clahe_manuel(img, clip_limit=2.0, grid_size=(8, 8))
+        resmi_kaydet(output_manual_path, res_manuel)
+        print("✅ Manuel yazılan CLAHE tamamlandı -> 'clahe_manuel.jpg'")
